@@ -65,7 +65,7 @@ uint32_t startTime;
 char ATC[60];
 char TempReading[20];
 const char readValue[] = "HELLO";
-static const uint8_t TMP_ADDR = 0x67 << 1;
+static const uint8_t TMP_ADDR = 0x65 << 1;
 static const uint8_t TMP_REG = 0x00;
 
 
@@ -306,7 +306,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1|LD2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
@@ -314,12 +314,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PA1 LD2_Pin */
-  GPIO_InitStruct.Pin = GPIO_PIN_1|LD2_Pin;
+  /*Configure GPIO pin : LD2_Pin */
+  GPIO_InitStruct.Pin = LD2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
 /* USER CODE END MX_GPIO_Init_2 */
@@ -394,7 +394,7 @@ void startMQTT(void){
 	 	  }
 	   }
   }
-  if(CGREGisOK ){
+  if(CGREGisOK){
 	  SIMTransmit("AT+CMQTTSTART\r\n");
 	  if (strstr((char *)reply, "ERROR")){
 		  SIMTransmit("AT+CMQTTDISC=0,120\r\n");
@@ -499,6 +499,7 @@ void readTemperature(void) {
 			sprintf(TempReading, "%u.%u C\r\n", ((unsigned int)tempt / 100), ((unsigned int)tempt % 100));
 			}
 		}
+	HAL_Delay(500);
 }
 
 /* USER CODE END 4 */
