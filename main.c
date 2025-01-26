@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -43,40 +44,58 @@
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
+DMA_HandleTypeDef hdma_i2c1_rx;
+DMA_HandleTypeDef hdma_i2c1_tx;
+
+TIM_HandleTypeDef htim1;
 
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+//MQTT
 const char apn[]  = "web.vodafone.de";
 const char host[] = "tcp://test.mosquitto.org";
 const int  port = 1883;
 const char username[] = "";
 const char password[] = "";
-const char topic[] = "dh11/temp/1";
-const uint32_t timeOut =10000;
-char reply[200] = {0};
+const char topic1[] = "mcp/temp/1";
+const char topic2[] = "pd/frq/1";
+
+//SIM7600
+char ATC[60];
+char reply[300] = {0};
 uint8_t ATisOK = 0;
 uint8_t CGREGisOK = 0;
 uint8_t MQTTisStart = 0;
 uint8_t MQTTisConnect = 0;
+const uint32_t timeOut =10000;
 uint32_t startTime;
-//uint16_t readValue;
-char ATC[60];
-char TempReading[20];
-const char readValue[] = "HELLO";
+
+//Temperature
 static const uint8_t TMP_ADDR = 0x65 << 1;
-static const uint8_t TMP_REG = 0x00;
+uint8_t TempReading[2];
 
-
+//I2Ccallback
+#define BUFFER_SIZE 5
+#define FAST_BUFFER 30
+#define FAST_TIME 1 //number of second the measuring should be done during the fast measuring
+#define TEMP_THRESHOLD 25
+uint8_t bufferSize = BUFFER_SIZE;
+char temperatureBuffer[FAST_BUFFER];
+uint8_t bufferIndex = 0;
+bool fastTrig = false;
+uint32_t fastTimr = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
 void powerOn(void);
 void SIMTransmit(char *cmd);
@@ -85,6 +104,7 @@ void transmitMQTT(void);
 void endMQTT(void);
 void mainMQTT(void);
 void readTemperature(void);
+void printBuffer(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -120,14 +140,15 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_USART1_UART_Init();
   MX_I2C1_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-
   powerOn();
+  HAL_TIM_Base_Start_IT(&htim1);
   /* USER CODE END 2 */
-
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
@@ -135,7 +156,6 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  readTemperature();
 	  mainMQTT();
   }
   /* USER CODE END 3 */
@@ -223,6 +243,52 @@ static void MX_I2C1_Init(void)
 }
 
 /**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 8400-1;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 1000-1;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+
+}
+
+/**
   * @brief USART1 Initialization Function
   * @param None
   * @retval None
@@ -285,6 +351,25 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
+  /* DMA1_Stream6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
 
 }
 
@@ -360,10 +445,10 @@ void powerOn() {
   */
 void SIMTransmit(char *cmd){
   memset(reply,0,sizeof(reply));
-  HAL_UART_Transmit(&huart1,(uint8_t *)cmd, strlen(cmd), 500);
-  HAL_UART_Receive (&huart1, (uint8_t*)reply, sizeof(reply), 500);
-  HAL_Delay(500);
-  HAL_UART_Transmit(&huart2, (uint8_t*)reply, strlen(reply), 500);
+  HAL_UART_Transmit(&huart1,(uint8_t *)cmd, strlen(cmd), 200);
+  HAL_UART_Receive (&huart1, (uint8_t*)reply, sizeof(reply), 200);
+  HAL_Delay(200);
+  HAL_UART_Transmit(&huart2, (uint8_t*)reply, strlen(reply), 200);
 }
 
 /**
@@ -413,23 +498,35 @@ void startMQTT(void){
    }
 }
 
-
 /**
   * @brief MQTT data publish
   * @retval None
   */
 void transmitMQTT(void){
-	sprintf(ATC, "AT+CMQTTTOPIC=0,%d\r\n", strlen(topic));
+	char mqttPayload[256];
+
+	sprintf(ATC, "AT+CMQTTtopic=0,%d\r\n", strlen(topic1));
 	SIMTransmit(ATC);
-	SIMTransmit("dh11/temp/1\r\n");
-	sprintf(ATC, "AT+CMQTTPAYLOAD=0,%d\r\n", strlen(TempReading));
+	SIMTransmit("mcp/temp/1\r\n");
+
+	sprintf(mqttPayload, "{[");
+		for (int i = 0; i < bufferSize; i++) {
+			sprintf(mqttPayload + strlen(mqttPayload), "%u", temperatureBuffer[i]);
+			if (i < bufferSize - 1) {
+					strcat(mqttPayload, ",");
+				}
+		}
+	strcat(mqttPayload, "]}");
+	sprintf(mqttPayload + strlen(mqttPayload), "\r\n");
+
+	sprintf(ATC, "AT+CMQTTPAYLOAD=0,%d\r\n", strlen(mqttPayload));
 	SIMTransmit(ATC);
-	SIMTransmit(TempReading);
+	SIMTransmit(mqttPayload);
 	SIMTransmit("AT+CMQTTPUB=0,1,60\r\n");
 }
 
 /**
-  * @brief MQTT terminate
+  * @brief MQTT terminate -- NOT USED YET
   * @retval None
   */
 void endMQTT(void) {
@@ -468,7 +565,6 @@ void mainMQTT(void){
 	if (MQTTisStart && MQTTisConnect) {
 	        transmitMQTT();
 	    }
-
 }
 
 /**
@@ -476,30 +572,97 @@ void mainMQTT(void){
   * @retval None
   */
 void readTemperature(void) {
-	HAL_StatusTypeDef ret;
-	uint8_t buf[30];
-	int16_t val;
-	float tempt;
-	buf[0] = TMP_REG;
-	ret = HAL_I2C_Master_Transmit(&hi2c1, TMP_ADDR, buf, 1, HAL_MAX_DELAY);
-	if (ret != HAL_OK) {
-		strcpy((char*)buf, "Error Communicating Tx\r\n");
-		}
-	else {
-		ret = HAL_I2C_Master_Receive(&hi2c1, TMP_ADDR, buf, 2, HAL_MAX_DELAY);
-		if (ret != HAL_OK) {
-			strcpy((char*)buf, "Error Communicating Rx\r\n");
-		} else {
-			val = ((int16_t)buf[0] << 8) | (buf[1]);
-			if ( val > 0x7FF) {
-				val |= 0xF000;
+	uint8_t reg_addr = 0x00;
+	HAL_StatusTypeDef status;
+
+	status = HAL_I2C_Master_Transmit(&hi2c1, TMP_ADDR, &reg_addr, 1, HAL_MAX_DELAY);
+	if (status != HAL_OK) {
+		char error_msg[50];
+		sprintf(error_msg, "I2C Master Transmit Error: %d\r\n", status);
+		HAL_UART_Transmit(&huart2, (uint8_t*)error_msg, strlen(error_msg), HAL_MAX_DELAY);
+		Error_Handler();
+		return;
+	}
+	// Start I2C Reception in DMA mode
+	status = HAL_I2C_Master_Receive_DMA(&hi2c1, TMP_ADDR, TempReading, 2);
+	if (status != HAL_OK) {
+		char error_msg[50];
+		sprintf(error_msg, "I2C Master Receive Error: %d\r\n", status);
+		HAL_UART_Transmit(&huart2, (uint8_t*)error_msg, strlen(error_msg), HAL_MAX_DELAY);
+		Error_Handler();
+		return;
+	}
+}
+
+/**
+  * @brief I2C reception complete callback. Convert the value from hexadecimal to decimal.
+  * @retval None
+  */
+void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+	if (hi2c->Instance == I2C1) {
+		int16_t val;
+		float Temp;
+		val = ((int16_t)TempReading[0] << 8) | TempReading[1];
+		Temp = val * 0.0625;
+		temperatureBuffer[bufferIndex] = Temp;
+		bufferIndex = (bufferIndex + 1) % bufferSize;
+
+		if (Temp > TEMP_THRESHOLD){
+			fastTrig = true;
+			fastTimr = FAST_TIME * 1000;
+			bufferSize = FAST_BUFFER;
 			}
-			tempt = val * 0.0625;
-			tempt *= 100;
-			sprintf(TempReading, "%u.%u C\r\n", ((unsigned int)tempt / 100), ((unsigned int)tempt % 100));
+	    }
+}
+
+/**
+  * @brief Timer interrupt to cycle the I2C
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim)
+{
+	static uint32_t timerCount = 0;
+	bool holdTrig = false;
+	timerCount++;
+
+	if (timerCount >= bufferSize) {
+		timerCount = 0;
+		bufferIndex = 0;
+		//printBuffer();
+	}
+	readTemperature();
+
+	if (fastTrig) {
+			holdTrig = true;
+		}
+		if (holdTrig){
+			if (fastTimr > 0) {
+				fastTimr -=100;
+			} else {
+				holdTrig = false;
+				bufferSize = BUFFER_SIZE;
+				bufferIndex = 0;
 			}
 		}
-	HAL_Delay(500);
+}
+
+/**
+  * @brief Print data --> debugging
+  * @retval None
+  */
+void printBuffer(void)
+{
+    char bufferMsg[200];
+    int validEntries = (bufferIndex == 0) ? bufferSize : bufferIndex;
+
+    sprintf(bufferMsg, "Buffer contents (%d entries): ", validEntries);
+	for (int i = 0; i < validEntries; i++) {
+		int index = (bufferIndex - validEntries + i + bufferSize) % bufferSize;
+		sprintf(bufferMsg + strlen(bufferMsg), "%u ", temperatureBuffer[index]);
+	}
+	sprintf(bufferMsg + strlen(bufferMsg), "\r\n");
+	HAL_UART_Transmit(&huart2, (uint8_t*)bufferMsg, strlen(bufferMsg), HAL_MAX_DELAY);
 }
 
 /* USER CODE END 4 */
