@@ -1,9 +1,5 @@
 # Documentation
 
-**Sadeep Ariyarathna**  
-[sadeepari@gmail.com](mailto:sadeepari@gmail.com)
-
----
 
 ## Table of Contents
 
@@ -18,7 +14,7 @@
 
 ## 1. Wiring Diagram
 
-*(Diagram content not included in the original text.)*
+_Refer to Documentation.pdf_
 
 ---
 
